@@ -1,18 +1,24 @@
 import asyncio
 
+from data.dataset_loader import load_sst2_validation
 from federated.client import Client
 from federated.server import Server
 from llm.llm_api import query_llm
 from prompt.prompt_utils import init_prompt
-
+from utils.logger import setup_logger
+from utils.metrics import evaluate
+# 创建 logger
+logger = setup_logger("app")
 
 class FederatedTrainer:
 
-    def __init__(self, config, dataset):
+    def __init__(self, config, dataset,valid_dataset):
 
         self.config = config
 
         self.dataset = dataset
+
+        self.valid_dataset = valid_dataset
 
         self.clients = []
 
@@ -30,13 +36,13 @@ class FederatedTrainer:
 
             data = self.dataset[i*split:(i+1)*split]
 
-            self.clients.append(Client(i, data))
+            self.clients.append(Client(i, data,self.valid_dataset))
 
     def train(self):
 
         for r in range(self.config.num_rounds):
 
-            print("Round", r)
+            logger.info("Round %d", r)
 
             global_prompt = self.server.global_prompt
 
@@ -53,39 +59,10 @@ class FederatedTrainer:
 
             new_prompt = self.server.aggregate(client_prompts)
 
-            print("Global Prompt:", " ".join(new_prompt))
+            # print("Global Prompt:", " ".join(new_prompt))
+            logger.info("Global Prompt: %s", " ".join(new_prompt))
 
-            score, err_list = asyncio.run(self.evaluate(new_prompt, self.dataset))
-            print("Accuracy:", score)
+            score, err_list = asyncio.run(evaluate(new_prompt, self.valid_dataset))
+            logger.info("Accuracy: %f", score)
+            # print("Accuracy:", score)
 
-    async def evaluate(self, prompt, dataset):
-        async def predict_batch(batch_data):
-            correct = 0
-            err_list = []
-            for x, y in batch_data:
-                pred = await query_llm(prompt, x)
-                if pred == str(y):
-                    correct += 1
-                else:
-                    err_list.append((x, y, pred))
-            return correct, err_list
-
-        batch_size = max(1, len(dataset) // 100)
-        batches = []
-        for i in range(0, len(dataset), batch_size):
-            batch = dataset[i:i + batch_size]
-            batches.append(batch)
-
-        tasks = [predict_batch(batch) for batch in batches]
-        print("start task")
-        results = await asyncio.gather(*tasks)
-        print("end task")
-
-        total_correct = 0
-        all_err_list = []
-
-        for correct, err_list in results:
-            total_correct += correct
-            all_err_list.extend(err_list)
-
-        return total_correct / len(dataset), all_err_list
